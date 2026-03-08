@@ -8,6 +8,10 @@ type SafetyGateProps = {
 };
 
 export function SafetyGate({ qc }: SafetyGateProps) {
+  const visibleClarifications = qc.needs_clarification.slice(0, 3);
+  const visibleMissingEvidence = qc.missing_evidence.slice(0, 2);
+  const visiblePolicyIssues = qc.policy_issues.slice(0, 2);
+
   return (
     <Card className={qc.is_safe ? "border-success/30" : "border-danger/40"}>
       <CardHeader className="pb-2">
@@ -21,10 +25,10 @@ export function SafetyGate({ qc }: SafetyGateProps) {
       </CardHeader>
       <CardContent className="space-y-3 text-sm">
         <section>
-          <p className="mb-2 text-sm font-medium text-muted-foreground">Что уточнить</p>
+          <p className="mb-2 text-sm font-medium text-muted-foreground">Что уточнить сейчас</p>
           <ul className="space-y-1.5 rounded-lg border border-border/70 bg-surface-2/40 p-2">
-            {qc.needs_clarification.length ? (
-              qc.needs_clarification.map((item) => (
+            {visibleClarifications.length ? (
+              visibleClarifications.map((item) => (
                 <li key={item} className="flex items-start gap-2">
                   <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" />
                   <span>{item}</span>
@@ -39,11 +43,11 @@ export function SafetyGate({ qc }: SafetyGateProps) {
           </ul>
         </section>
 
-        {qc.missing_evidence.length ? (
+        {visibleMissingEvidence.length ? (
           <section>
             <p className="mb-1 text-xs text-muted-foreground">Недостающие подтверждения</p>
             <ul className="space-y-1">
-              {qc.missing_evidence.map((item) => (
+              {visibleMissingEvidence.map((item) => (
                 <li key={item} className="text-muted-foreground">
                   • {item}
                 </li>
@@ -52,11 +56,11 @@ export function SafetyGate({ qc }: SafetyGateProps) {
           </section>
         ) : null}
 
-        {qc.policy_issues.length ? (
+        {visiblePolicyIssues.length ? (
           <section>
             <p className="mb-1 text-xs text-muted-foreground">Ограничения безопасности</p>
             <ul className="space-y-1">
-              {qc.policy_issues.map((item) => (
+              {visiblePolicyIssues.map((item) => (
                 <li key={item} className="text-danger">
                   • {item}
                 </li>

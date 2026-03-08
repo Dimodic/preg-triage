@@ -860,9 +860,6 @@ export default function TriagePage() {
           onCopySummary={() => {
             void copySummary();
           }}
-          onRedFlagClick={(flag) => {
-            setActiveConcernTerms([flag], { entryId: null });
-          }}
           onConcernSelect={(terms) => {
             setActiveConcernTerms(terms, { entryId: null });
           }}

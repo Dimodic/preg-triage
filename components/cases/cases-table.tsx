@@ -44,7 +44,7 @@ export function CasesTable({ cases }: CasesTableProps) {
         {cases.map((record) => (
           <TableRow key={record.id}>
             <TableCell>
-              <Link href={`/cases/${record.id}`} className="font-medium text-primary hover:underline">
+              <Link href={`/cases/${encodeURIComponent(record.id)}`} className="font-medium text-primary hover:underline">
                 {record.payload.call_id}
               </Link>
             </TableCell>

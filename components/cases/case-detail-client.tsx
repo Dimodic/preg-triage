@@ -15,10 +15,25 @@ type CaseDetailClientProps = {
   caseId: string;
 };
 
+const doctorReviewLabels = {
+  pending: "ожидается",
+  confirmed: "подтверждено",
+  corrected: "исправлено",
+} as const;
+
+const safeDecodeCaseId = (value: string) => {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+};
+
 export function CaseDetailClient({ caseId }: CaseDetailClientProps) {
   const { ready, getCaseById } = useAppStore();
   const [traceOpen, setTraceOpen] = useState(false);
-  const record = getCaseById(caseId);
+  const resolvedCaseId = useMemo(() => safeDecodeCaseId(caseId), [caseId]);
+  const record = getCaseById(caseId) ?? getCaseById(resolvedCaseId);
 
   const payload = record?.payload;
 
@@ -102,7 +117,7 @@ export function CaseDetailClient({ caseId }: CaseDetailClientProps) {
                   {routeLabel(payload.recommended_route)}
                 </Badge>
                 <Badge variant={payload.doctor_review.status === "pending" ? "outline" : "success"}>
-                  review: {payload.doctor_review.status}
+                  Врачебная проверка: {doctorReviewLabels[payload.doctor_review.status]}
                 </Badge>
               </div>
 
