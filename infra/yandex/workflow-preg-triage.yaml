@@ -1,0 +1,651 @@
+﻿yawl: '0.1'
+
+defaultRetryPolicy:
+  errorList: [ALL]
+  errorListMode: INCLUDE
+  retryCount: 2
+
+start: normalize_input
+
+steps:
+  # 0) Normalize input: supports raw transcript, STT text and translated text.
+  normalize_input:
+    noOp:
+      output: |-
+        \({
+          "call_id": (.call_id // .input.call_id // "demo-call"),
+          "trace": (.trace // .input.trace // false),
+          "source_lang": (.source_lang // .input.source_lang // "ru"),
+          "target_lang": (.target_lang // .input.target_lang // "ru"),
+          "complaint_text": (
+            .complaint_text
+            // .patient_input.complaint_text
+            // .input.complaint_text
+            // .input.patient_input.complaint_text
+            // ""
+          ),
+          "patient_input": (
+            .patient_input
+            // .input.patient_input
+            // {}
+          ),
+          "transcript_original": (
+            .transcript_original
+            // .stt_text
+            // .input.transcript_original
+            // .input.stt_text
+            // .transcript
+            // .input.transcript
+            // ""
+          ),
+          "transcript": (
+            .transcript
+            // .transcript_translated
+            // .translated_text
+            // .input.transcript
+            // .input.transcript_translated
+            // .input.translated_text
+            // .complaint_text
+            // .patient_input.complaint_text
+            // ""
+          )
+        })
+      next: validate_input
+
+  validate_input:
+    switch:
+      choices:
+        - condition: (.transcript != null) and ((.transcript | tostring | length) > 2)
+          next: extract_facts
+      default:
+        next: build_low_context_result
+
+  # Fallback for ultra-short/empty context. Returns safe payload for UI instead of workflow fail.
+  build_low_context_result:
+    noOp:
+      output: |-
+        \({
+          "patient_input": (.patient_input // {}),
+          "extracted": {
+            "pregnancy_weeks": null,
+            "complaints": [],
+            "bleeding": {
+              "present": false,
+              "color": null,
+              "pads_changed_count": null,
+              "time_window_text": null
+            },
+            "pain": {
+              "present": false,
+              "pattern": null,
+              "location": null
+            },
+            "fetal_movement": "unknown",
+            "dizziness_or_faint": false,
+            "address": null,
+            "alone": null,
+            "evidence_quotes": []
+          },
+          "rag": {
+            "guidelines": [],
+            "notes": "недостаточно надежного контекста для подтверждений"
+          },
+          "triage": {
+            "urgency": 1,
+            "dispatch_now": false,
+            "primary_reason": "Недостаточно контекста в транскрипте",
+            "concern_terms": [],
+            "red_flags": [],
+            "next_questions": [
+              "Назовите точный адрес, где вы сейчас находитесь.",
+              "Сколько недель беременности?",
+              "Есть ли кровотечение, слабость или головокружение сейчас?"
+            ],
+            "operator_script": [
+              "Я с вами на линии, сейчас уточним данные для безопасной маршрутизации.",
+              "Пожалуйста, назовите адрес и ориентир для быстрого прибытия бригады при необходимости.",
+              "Если состояние ухудшится, сообщите сразу, я обновлю приоритет вызова."
+            ],
+            "limitations": "Автоматический ответ в режиме недостаточного контекста: требуется уточнение данных.",
+            "evidence_quotes": [],
+            "guideline_citations": [],
+            "confidence": 0.2
+          },
+          "operator_card": {
+            "title": "Недостаточный контекст",
+            "summary": "Входных данных недостаточно; требуется быстрое доуточнение ключевых параметров.",
+            "key_facts": [
+              "Транскрипт слишком короткий для надежной категоризации"
+            ],
+            "dispatch_fields": {
+              "address": null,
+              "gestation_weeks": null,
+              "alone": null
+            },
+            "evidence_quotes": [],
+            "guideline_citations": []
+          },
+          "qc": {
+            "is_safe": true,
+            "missing_evidence": [],
+            "policy_issues": [],
+            "needs_clarification": [
+              "Уточнить адрес",
+              "Уточнить срок беременности",
+              "Уточнить кровотечение/боль/шевеления/слабость"
+            ]
+          }
+        })
+      next: build_result
+
+  # 1) Extract facts (strict JSON)
+  extract_facts:
+    foundationModelsCall:
+      modelUrl: gpt://b1gm4qf0ph1v87honq3g/yandexgpt/latest
+      generate:
+        temperature: 0.2
+        maxTokens: 1200
+        jsonSchema: |-
+          {
+            "type":"object",
+            "additionalProperties":false,
+            "properties":{
+              "pregnancy_weeks":{"type":["integer","null"],"minimum":1,"maximum":45},
+              "complaints":{"type":"array","items":{"type":"string"}},
+
+              "bleeding":{
+                "type":"object",
+                "additionalProperties":false,
+                "properties":{
+                  "present":{"type":"boolean"},
+                  "color":{"type":["string","null"]},
+                  "pads_changed_count":{"type":["integer","null"],"minimum":0,"maximum":50},
+                  "time_window_text":{"type":["string","null"]}
+                },
+                "required":["present","color","pads_changed_count","time_window_text"]
+              },
+
+              "pain":{
+                "type":"object",
+                "additionalProperties":false,
+                "properties":{
+                  "present":{"type":"boolean"},
+                  "pattern":{"type":["string","null"]},
+                  "location":{"type":["string","null"]}
+                },
+                "required":["present","pattern","location"]
+              },
+
+              "fetal_movement":{"type":"string","enum":["normal","reduced","absent","unknown"]},
+              "dizziness_or_faint":{"type":"boolean"},
+              "address":{"type":["string","null"]},
+              "alone":{"type":["boolean","null"]},
+
+              "evidence_quotes":{"type":"array","minItems":0,"maxItems":10,"items":{"type":"string"}}
+            },
+            "required":[
+              "pregnancy_weeks","complaints","bleeding","pain","fetal_movement",
+              "dizziness_or_faint","address","alone","evidence_quotes"
+            ]
+          }
+        messages:
+          messages:
+            - role: system
+              text: >-
+                Ты помощник диспетчера скорой (демо).
+                Извлеки факты из транскрипта и верни ТОЛЬКО JSON по схеме.
+                Не вычисляй величины: если не указан интервал ("в час") — не придумывай его.
+                Если адрес не назван — address=null.
+                evidence_quotes — только дословные цитаты; если их нет, верни пустой массив.
+            - role: user
+              text: |-
+                TRANSCRIPT:
+                \(.transcript)
+
+                PATIENT_INPUT_JSON:
+                \(.patient_input | tojson)
+      output: |-
+        \({
+          "extracted": (
+            (
+              .alternatives[0].message.text
+              | fromjson?
+            ) // {
+              "pregnancy_weeks": null,
+              "complaints": [],
+              "bleeding": {
+                "present": false,
+                "color": null,
+                "pads_changed_count": null,
+                "time_window_text": null
+              },
+              "pain": {
+                "present": false,
+                "pattern": null,
+                "location": null
+              },
+              "fetal_movement": "unknown",
+              "dizziness_or_faint": false,
+              "address": null,
+              "alone": null,
+              "evidence_quotes": []
+            }
+          )
+        })
+      next: rag_context
+
+  # 2) RAG: AI Studio agent (uses File search triage-kb-v1 inside agent)
+  rag_context:
+    aiStudioAgent:
+      promptTemplateId: "fvtn7djkbr8jsb4vpqv6"
+      auto_approve: true
+      message: |-
+        INPUT_TRANSCRIPT:
+        \(.transcript)
+
+        INPUT_EXTRACTED_JSON:
+        \(.extracted | tojson)
+
+        Верни СТРОГО JSON:
+        {"guidelines":[{"source":"...","file_id":null,"quote":"...","why":"..."}],"notes":"..."}
+      variables:
+        transcript: '\(.transcript)'
+        extracted_json: '\(.extracted | tojson)'
+      output: |-
+        \({
+          "rag": (
+            (
+              (
+                .Result
+                | tostring
+                | gsub("```[a-zA-Z]*\\n";"")
+                | gsub("```";"")
+              )
+              | fromjson?
+            )
+            // {"guidelines":[],"notes":"ошибка разбора ответа поискового слоя"}
+          )
+        })
+      next: triage_and_card
+
+  # 3) Triage + Operator card (parallel)
+  triage_and_card:
+    parallel:
+      branches:
+        triage_branch:
+          start: triage_call
+          steps:
+            triage_call:
+              foundationModelsCall:
+                modelUrl: gpt://b1gm4qf0ph1v87honq3g/yandexgpt/latest
+                generate:
+                  temperature: 0.1
+                  maxTokens: 1200
+                  jsonSchema: |-
+                    {
+                      "type":"object",
+                      "additionalProperties":false,
+                      "properties":{
+                        "urgency":{"type":"integer","minimum":0,"maximum":3},
+                        "dispatch_now":{"type":"boolean"},
+                        "primary_reason":{"type":"string"},
+                        "concern_terms":{"type":"array","minItems":0,"maxItems":20,"items":{"type":"string"}},
+                        "red_flags":{"type":"array","minItems":0,"items":{"type":"string"}},
+                        "next_questions":{"type":"array","minItems":3,"maxItems":10,"items":{"type":"string"}},
+                        "operator_script":{"type":"array","minItems":3,"maxItems":12,"items":{"type":"string"}},
+                        "limitations":{"type":"string"},
+                        "evidence_quotes":{"type":"array","minItems":0,"maxItems":12,"items":{"type":"string"}},
+                        "guideline_citations":{"type":"array","items":{"type":"string"}},
+                        "confidence":{"type":"number","minimum":0,"maximum":1}
+                      },
+                      "required":[
+                        "urgency","dispatch_now","primary_reason","concern_terms","red_flags","next_questions",
+                        "operator_script","limitations","evidence_quotes","guideline_citations","confidence"
+                      ]
+                    }
+                  messages:
+                    messages:
+                      - role: system
+                        text: >-
+                          Ты делаешь первичную сортировку вызова для диспетчера скорой (демо). Верни ТОЛЬКО JSON.
+                          НЕЛЬЗЯ: диагнозы/лечение/назначения.
+                          red_flags — только клинические признаки (не "urgency=3").
+                          concern_terms — список тревожных слов/фраз из TRANSCRIPT в полной форме (без стемов/обрезков),
+                          которые нужно подсветить в UI прямо в тексте реплик.
+                          В concern_terms включай только клинические/риск-сигналы из слов звонящей.
+                          Не включай логистику и служебные слова: "адрес", "телефон", "номер", "подъезд", "домофон".
+                          Не дублируй синонимы: выбирай каноничные 4-8 сигналов по убыванию важности.
+                          evidence_quotes — только из TRANSCRIPT; если явных цитат нет, верни пустой массив.
+                          guideline_citations — это дословные цитаты из RAG_JSON.guidelines[*].quote (если есть).
+
+                          В operator_script:
+                          - НЕ пиши "соединю с бригадой/врачом".
+                          - Пиши реалистично: "бригада направлена", "оставайтесь на линии", "не вставайте", "лягте на бок", "подготовьте документы", "откройте дверь/домофон".
+
+                          Приоритет вопросов: адрес → сознание/слабость → объём кровотечения (с интервалом) → шевеления → давление/температура.
+
+                          Срочность:
+                          urgency=3 и dispatch_now=true если беременность >=20 недель и есть кровотечение
+                          ИЛИ кровотечение + схваткообразная боль/«каменеет»
+                          ИЛИ сниженные/отсутствующие шевеления
+                          ИЛИ головокружение/предобморок.
+
+                          Если контекст ограничен, не выдумывай факты и делай упор на уточняющие вопросы.
+                      - role: user
+                        text: |-
+                          TRANSCRIPT:
+                          \(.transcript)
+
+                          PATIENT_INPUT_JSON:
+                          \(.patient_input | tojson)
+
+                          EXTRACTED_JSON:
+                          \(.extracted | tojson)
+
+                          RAG_JSON:
+                          \(.rag | tojson)
+                output: |-
+                  \({
+                    "triage": (
+                      (
+                        .alternatives[0].message.text
+                        | fromjson?
+                      ) // {
+                        "urgency": 1,
+                        "dispatch_now": false,
+                        "primary_reason": "Недостаточно данных для надежной маршрутизации",
+                        "concern_terms": [],
+                        "red_flags": [],
+                        "next_questions": [
+                          "Назовите точный адрес.",
+                          "Сколько недель беременности?",
+                          "Есть ли сейчас кровотечение, боль, слабость или снижение шевелений?"
+                        ],
+                        "operator_script": [
+                          "Я с вами на линии и уточняю ключевые данные.",
+                          "Назовите адрес и ориентир для быстрого прибытия бригады.",
+                          "Если состояние ухудшится, сообщите сразу."
+                        ],
+                        "limitations": "Резервный ответ после ошибки разбора JSON.",
+                        "evidence_quotes": [],
+                        "guideline_citations": [],
+                        "confidence": 0.25
+                      }
+                    )
+                  })
+
+        card_branch:
+          start: operator_card_call
+          steps:
+            operator_card_call:
+              foundationModelsCall:
+                modelUrl: gpt://b1gm4qf0ph1v87honq3g/yandexgpt/latest
+                generate:
+                  temperature: 0.2
+                  maxTokens: 900
+                  jsonSchema: |-
+                    {
+                      "type":"object",
+                      "additionalProperties":false,
+                      "properties":{
+                        "title":{"type":"string"},
+                        "summary":{"type":"string"},
+                        "key_facts":{"type":"array","minItems":0,"maxItems":10,"items":{"type":"string"}},
+                        "dispatch_fields":{
+                          "type":"object",
+                          "additionalProperties":false,
+                          "properties":{
+                            "address":{"type":["string","null"]},
+                            "gestation_weeks":{"type":["integer","null"],"minimum":1,"maximum":45},
+                            "alone":{"type":["boolean","null"]}
+                          },
+                          "required":["address","gestation_weeks","alone"]
+                        },
+                        "evidence_quotes":{"type":"array","minItems":0,"maxItems":10,"items":{"type":"string"}},
+                        "guideline_citations":{"type":"array","items":{"type":"string"}}
+                      },
+                      "required":["title","summary","key_facts","dispatch_fields","evidence_quotes","guideline_citations"]
+                    }
+                  messages:
+                    messages:
+                      - role: system
+                        text: >-
+                          Карточка оператору (демо). Верни ТОЛЬКО JSON.
+                          НЕЛЬЗЯ: лечение/назначения/диагнозы.
+                          summary: 1-2 строки, без новых фактов.
+                          address если null — оставь null.
+                          guideline_citations — это дословные цитаты из RAG_JSON.guidelines[*].quote (если есть).
+                          evidence_quotes — только из TRANSCRIPT; если явных цитат нет, верни пустой массив.
+                      - role: user
+                        text: |-
+                          TRANSCRIPT:
+                          \(.transcript)
+
+                          PATIENT_INPUT_JSON:
+                          \(.patient_input | tojson)
+
+                          EXTRACTED_JSON:
+                          \(.extracted | tojson)
+
+                          RAG_JSON:
+                          \(.rag | tojson)
+                output: |-
+                  \({
+                    "operator_card": (
+                      (
+                        .alternatives[0].message.text
+                        | fromjson?
+                      ) // {
+                        "title": "Карточка оператора",
+                        "summary": "Недостаточно подтвержденных данных, требуется доуточнение.",
+                        "key_facts": [],
+                        "dispatch_fields": {
+                          "address": null,
+                          "gestation_weeks": null,
+                          "alone": null
+                        },
+                        "evidence_quotes": [],
+                        "guideline_citations": []
+                      }
+                    )
+                  })
+      output: '\(.triage_branch + .card_branch)'
+      next: qc_check
+
+  # 4) QC: missing_evidence only for invented facts; data shortage -> needs_clarification
+  qc_check:
+    foundationModelsCall:
+      modelUrl: gpt://b1gm4qf0ph1v87honq3g/yandexgpt/latest
+      generate:
+        temperature: 0
+        maxTokens: 700
+        jsonSchema: |-
+          {
+            "type":"object",
+            "additionalProperties":false,
+            "properties":{
+              "is_safe":{"type":"boolean"},
+              "missing_evidence":{"type":"array","items":{"type":"string"}},
+              "policy_issues":{"type":"array","items":{"type":"string"}},
+              "needs_clarification":{"type":"array","items":{"type":"string"}}
+            },
+            "required":["is_safe","missing_evidence","policy_issues","needs_clarification"]
+          }
+        messages:
+          messages:
+            - role: system
+              text: >-
+                Контроль качества для бота первичной сортировки. Верни ТОЛЬКО JSON.
+
+                missing_evidence:
+                - ТОЛЬКО если triage/operator_card утверждают факт, которого нет в TRANSCRIPT или EXTRACTED.
+                - НЕ добавляй сюда вопросы и НЕ добавляй сюда поля, которые равны null (это просто неизвестно).
+
+                needs_clarification:
+                - Сюда выпиши, что нужно уточнить (адрес, время начала кровотечения, интервал кровопотери и т.п.).
+                - Наличие needs_clarification НЕ делает ответ небезопасным.
+
+                policy_issues:
+                - ТОЛЬКО если есть лечение/назначения/диагнозы ("примите", "таблетки", "лечить", "антибиотик" и т.п.).
+
+                Правило is_safe:
+                - is_safe=false ТОЛЬКО если missing_evidence НЕ пустой ИЛИ policy_issues НЕ пустой.
+                - Иначе is_safe=true.
+            - role: user
+              text: |-
+                TRANSCRIPT:
+                \(.transcript)
+
+                PATIENT_INPUT_JSON:
+                \(.patient_input | tojson)
+
+                EXTRACTED_JSON:
+                \(.extracted | tojson)
+
+                TRIAGE_JSON:
+                \(.triage | tojson)
+
+                CARD_JSON:
+                \(.operator_card | tojson)
+      output: |-
+        \({
+          "qc": (
+            (
+              .alternatives[0].message.text
+              | fromjson?
+            ) // {
+              "is_safe": true,
+              "missing_evidence": [],
+              "policy_issues": [],
+              "needs_clarification": ["Проверить ручной разбор: QC parse fallback"]
+            }
+          )
+        })
+      next: qc_gate
+
+  # 5) Gate: if hallucinations or forbidden content exist -> repair
+  qc_gate:
+    switch:
+      choices:
+        - condition: ((.qc.missing_evidence | length) == 0) and ((.qc.policy_issues | length) == 0)
+          next: build_result
+      default:
+        next: repair_outputs
+
+  # 6) Repair: rewrite triage + card safely (if QC found issues)
+  repair_outputs:
+    foundationModelsCall:
+      modelUrl: gpt://b1gm4qf0ph1v87honq3g/yandexgpt/latest
+      generate:
+        temperature: 0
+        maxTokens: 1200
+        jsonSchema: |-
+          {
+            "type":"object",
+            "additionalProperties":false,
+            "properties":{
+              "triage":{
+                "type":"object",
+                "additionalProperties":false,
+                "properties":{
+                  "urgency":{"type":"integer","minimum":0,"maximum":3},
+                  "dispatch_now":{"type":"boolean"},
+                  "primary_reason":{"type":"string"},
+                  "concern_terms":{"type":"array","minItems":0,"maxItems":20,"items":{"type":"string"}},
+                  "red_flags":{"type":"array","minItems":0,"items":{"type":"string"}},
+                  "next_questions":{"type":"array","minItems":0,"maxItems":10,"items":{"type":"string"}},
+                  "operator_script":{"type":"array","minItems":0,"maxItems":12,"items":{"type":"string"}},
+                  "limitations":{"type":"string"},
+                  "evidence_quotes":{"type":"array","minItems":0,"maxItems":12,"items":{"type":"string"}},
+                  "guideline_citations":{"type":"array","items":{"type":"string"}},
+                  "confidence":{"type":"number","minimum":0,"maximum":1}
+                },
+                "required":[
+                  "urgency","dispatch_now","primary_reason","concern_terms","red_flags",
+                  "next_questions","operator_script","limitations","evidence_quotes",
+                  "guideline_citations","confidence"
+                ]
+              },
+              "operator_card":{
+                "type":"object",
+                "additionalProperties":false,
+                "properties":{
+                  "title":{"type":"string"},
+                  "summary":{"type":"string"},
+                  "key_facts":{"type":"array","minItems":0,"maxItems":10,"items":{"type":"string"}},
+                  "dispatch_fields":{
+                    "type":"object",
+                    "additionalProperties":false,
+                    "properties":{
+                      "address":{"type":["string","null"]},
+                      "gestation_weeks":{"type":["integer","null"],"minimum":1,"maximum":45},
+                      "alone":{"type":["boolean","null"]}
+                    },
+                    "required":["address","gestation_weeks","alone"]
+                  },
+                  "evidence_quotes":{"type":"array","minItems":0,"maxItems":10,"items":{"type":"string"}},
+                  "guideline_citations":{"type":"array","items":{"type":"string"}}
+                },
+                "required":[
+                  "title","summary","key_facts","dispatch_fields",
+                  "evidence_quotes","guideline_citations"
+                ]
+              }
+            },
+            "required":["triage","operator_card"]
+          }
+        messages:
+          messages:
+            - role: system
+              text: >-
+                Исправь triage/operator_card по замечаниям QC.
+                Удали/исправь всё, что не подтверждено TRANSCRIPT или EXTRACTED.
+                Удали любые лечение/назначения/диагнозы.
+                Верни ТОЛЬКО JSON: { "triage": {...}, "operator_card": {...} }
+            - role: user
+              text: |-
+                TRANSCRIPT:
+                \(.transcript)
+
+                EXTRACTED_JSON:
+                \(.extracted | tojson)
+
+                RAG_JSON:
+                \(.rag | tojson)
+
+                CURRENT_TRIAGE_JSON:
+                \(.triage | tojson)
+
+                CURRENT_CARD_JSON:
+                \(.operator_card | tojson)
+
+                QC_JSON:
+                \(.qc | tojson)
+      output: '\((.alternatives[0].message.text | fromjson?) // {"triage": .triage, "operator_card": .operator_card})'
+      next: build_result
+
+  # 7) Final output
+  build_result:
+    noOp:
+      output: |-
+        \({
+          "call_id": (.call_id // .input.call_id // "demo-call"),
+          "patient_input": (.patient_input // {}),
+          "source_lang": (.source_lang // "ru"),
+          "target_lang": (.target_lang // "ru"),
+          "transcript_original": (.transcript_original // .transcript),
+          "transcript": .transcript,
+          "extracted": .extracted,
+          "rag": .rag,
+          "triage": .triage,
+          "operator_card": .operator_card,
+          "qc": (
+            .qc + {
+              "is_safe": (((.qc.missing_evidence | length) == 0) and ((.qc.policy_issues | length) == 0))
+            }
+          )
+        })
+      next: done
+
+  done:
+    success: {}

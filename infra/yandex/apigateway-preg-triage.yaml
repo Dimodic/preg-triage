@@ -1,0 +1,223 @@
+﻿openapi: "3.0.0"
+info:
+  title: "Диспетчер вызовов: API оркестрации"
+  version: "1.0.0"
+
+servers:
+  - url: https://d5dpcemibk5vlv88dg87.qsvaa8tq.apigw.yandexcloud.net
+
+x-yc-apigateway:
+  cors:
+    origin: "*"
+    methods:
+      - GET
+      - POST
+      - OPTIONS
+    allowedHeaders:
+      - Content-Type
+      - Authorization
+      - X-Request-ID
+
+paths:
+  /triage/run:
+    post:
+      summary: "Запуск оркестрации (возвращает executionId)"
+      description: >
+        Запускает выполнение Yandex Cloud Workflows для контура первичной сортировки.
+        Рекомендуемый формат тела запроса:
+        {"input":{"inputJson":"{\"call_id\":\"...\",\"transcript\":\"...\",\"trace\":true}"}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [input]
+              properties:
+                input:
+                  type: object
+                  required: [inputJson]
+                  properties:
+                    inputJson:
+                      type: string
+                      description: "JSON-строка c {call_id, transcript, transcript_original?, source_lang?, target_lang?, trace?}"
+            examples:
+              wrapped:
+                value:
+                  input:
+                    inputJson: "{\"call_id\":\"demo-001\",\"transcript\":\"Скорая помощь...\",\"trace\":true}"
+      responses:
+        "200":
+          description: "Выполнение запущено"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  executionId:
+                    type: string
+        "400":
+          description: "Некорректный запрос"
+        "502":
+          description: "Ошибка внешней интеграции"
+      x-yc-apigateway-integration:
+        type: http
+        method: POST
+        url: "https://serverless-workflows.api.cloud.yandex.net/workflows/v1/execution/dfqs0456vlif6d6keo53/start"
+        serviceAccountId: "ajese8sgpgle2m1nd1kg"
+        headers:
+          Content-Type: "application/json"
+          Accept: "application/json"
+        timeouts:
+          connect: 0.5
+          read: 30
+
+  /triage/execution/{executionId}:
+    get:
+      summary: "Получить статус и результат выполнения"
+      description: >
+        Опрос выполнения до статуса FINISHED или FAILED.
+        При FINISHED результат хранится в execution.result.resultJson (строка JSON).
+      parameters:
+        - name: executionId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: "Информация о выполнении"
+          content:
+            application/json:
+              schema:
+                type: object
+      x-yc-apigateway-integration:
+        type: http
+        method: GET
+        url: "https://serverless-workflows.api.cloud.yandex.net/workflows/v1/execution/{executionId}"
+        serviceAccountId: "ajese8sgpgle2m1nd1kg"
+        headers:
+          Accept: "application/json"
+        timeouts:
+          connect: 0.5
+          read: 15
+
+  /triage/execution/{executionId}/history:
+    get:
+      summary: "Получить историю выполнения (трассировка)"
+      parameters:
+        - name: executionId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: "История выполнения"
+          content:
+            application/json:
+              schema:
+                type: object
+      x-yc-apigateway-integration:
+        type: http
+        method: GET
+        url: "https://serverless-workflows.api.cloud.yandex.net/workflows/v1/execution/{executionId}/history"
+        serviceAccountId: "ajese8sgpgle2m1nd1kg"
+        headers:
+          Accept: "application/json"
+        timeouts:
+          connect: 0.5
+          read: 30
+
+  /speech/stt-translate:
+    post:
+      summary: "Распознавание речи + перевод (Cloud Function)"
+      description: >
+        Принимает аудио base64, запускает Yandex SpeechKit STT,
+        опционально запускает Yandex Translate и возвращает исходный и переведенный текст.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [audio_base64]
+              properties:
+                audio_base64:
+                  type: string
+                  description: "Raw base64 audio or data URL (data:audio/...;base64,...)"
+                audio_format:
+                  type: string
+                  enum: [oggopus, lpcm]
+                  default: oggopus
+                sample_rate_hertz:
+                  type: integer
+                  description: "Required for lpcm"
+                source_lang:
+                  type: string
+                  default: ru-RU
+                target_lang:
+                  type: string
+                  default: ru
+                translate:
+                  type: boolean
+                  default: true
+                call_id:
+                  type: string
+                role:
+                  type: string
+                  enum: [Operator, Caller, Unknown]
+                  default: Unknown
+            examples:
+              demo:
+                value:
+                  audio_base64: "<base64>"
+                  audio_format: "oggopus"
+                  source_lang: "ru-RU"
+                  target_lang: "en"
+                  translate: true
+                  call_id: "CALL-001"
+                  role: "Caller"
+      responses:
+        "200":
+          description: "Результат распознавания/перевода"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  text_original:
+                    type: string
+                  text_translated:
+                    type: string
+                  translated:
+                    type: boolean
+                  source_lang:
+                    type: string
+                  target_lang:
+                    type: string
+                  confidence:
+                    type: number
+                    nullable: true
+                  call_id:
+                    type: string
+                    nullable: true
+                  role:
+                    type: string
+                    nullable: true
+        "400":
+          description: "Некорректный запрос"
+        "502":
+          description: "Ошибка внешнего STT/Translate сервиса"
+      x-yc-apigateway-integration:
+        type: http
+        method: POST
+        # Replace with your Cloud Function invoke URL.
+        url: "https://functions.yandexcloud.net/d4e00000000000000000"
+        serviceAccountId: "ajese8sgpgle2m1nd1kg"
+        headers:
+          Content-Type: "application/json"
+          Accept: "application/json"
+        timeouts:
+          connect: 1
+          read: 30
